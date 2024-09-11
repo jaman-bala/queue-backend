@@ -17,11 +17,7 @@ dotenv.config();
 const app = express();
 const server = createServer(app);
 const io = new Server(server, {
-    cors: {
-        origin: ['http://e-queue.tsvs.kg', 'http://dev-queue.tsvs.kg'], // Оба домена
-        methods: ['GET', 'POST'],
-        credentials: true, // Если используете куки для авторизации
-    },
+    cors: 'http://e-queue.tsvs.kg/',
 });
 const port = process.env.PORT || 5000;
 
@@ -35,7 +31,7 @@ app.use((req, res, next) => {
 
 app.use(
     cors({
-        origin: ['http://e-queue.tsvs.kg', 'http://dev-queue.tsvs.kg'], // Оба домена
+        origin: 'http://e-queue.tsvs.kg/',
         methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
         credentials: true,
     }),
