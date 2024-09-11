@@ -31,7 +31,7 @@ app.use((req, res, next) => {
 
 app.use(
     cors({
-        origin: 'http://e-queue.tsvs.kg/',
+        origin: 'http://e-queue.tsvs.kg',
         methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
         credentials: true,
     }),
