@@ -186,7 +186,7 @@ module.exports = (io, socket) => {
                 await session.save();
                 ticket.status = 'in-progress';
                 const savedTicket = await ticket.save();
-                io.to(departmentId).emit('ticket-in-progress', {
+                io.to(session._id.toString()).emit('ticket-in-progress-spec', {
                     success: true,
                     ticket: savedTicket,
                     windowNumber: session.windowNumber,
