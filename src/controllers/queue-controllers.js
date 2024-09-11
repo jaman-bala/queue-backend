@@ -1,6 +1,6 @@
 const Session = require('../models/session-model');
 const Department = require('../models/department-model');
-const Queue = require('../models/queue-model.');
+const Queue = require('../models/queue-model');
 
 const getAllWaitingDepartmentsQueue = async (req, res) => {
     const { departmentId } = req.params;
@@ -10,17 +10,6 @@ const getAllWaitingDepartmentsQueue = async (req, res) => {
 
         if (!department) {
             return res.status(400).json({ message: 'Нет такого филиала' });
-        }
-
-        const queues = await Queue.find({
-            department: department._id,
-            status: 'waiting',
-        })
-            .sort({ createdAt: 1 })
-            .lean();
-
-        if (!queues || queues.length === 0) {
-            return res.status(200).json({ message: 'Очереди нет' });
         }
 
         // const sessions = await Session.find({
@@ -43,6 +32,17 @@ const getAllWaitingDepartmentsQueue = async (req, res) => {
             .populate('currentQueue')
             .sort({ availableSince: -1 })
             .lean();
+
+        const queues = await Queue.find({
+            department: departmentId,
+            status: 'waiting',
+        })
+            .sort({ createdAt: 1 })
+            .lean();
+
+        if (!queues || (queues.length === 0 && !sessions)) {
+            return res.status(200).json({ message: 'Очереди нет' });
+        }
 
         const tsTickets = queues.filter((queue) => queue.type === 'TS');
         const vsTickets = queues.filter((queue) => queue.type === 'VS');

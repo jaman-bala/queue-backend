@@ -3,6 +3,7 @@ const Session = require('../models/session-model.js');
 const Department = require('../models/department-model.js');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
+const Queue = require('../models/queue-model.js');
 
 const login = async (req, res) => {
     try {
@@ -157,7 +158,7 @@ const createNewUser = async (req, res) => {
 };
 
 const logout = async (req, res) => {
-    const { sessionId } = req.body;
+    const { sessionId, userId } = req.body;
     try {
         const foundSession = await Session.findById(sessionId);
         if (!foundSession) {
@@ -168,7 +169,22 @@ const logout = async (req, res) => {
         foundSession.endTime = new Date();
         foundSession.isAvailable = false;
 
-        const savedSession = await foundSession.save();
+        const foundUser = await User.findById(userId);
+
+        if (!foundUser) {
+            res.status(400).json({ message: 'Нет такого пользователя' });
+        }
+
+        if (foundUser.role === 'specialist') {
+            const foundQueue = await Queue.findById(foundSession.currentQueue);
+            if (foundQueue) {
+                foundQueue.status = 'completed';
+                await foundQueue.save();
+            }
+            foundSession.currentQueue = null;
+        }
+        await foundSession.save();
+
         res.status(200).json({
             message: 'Пользователь успешно окончил сессию',
         });

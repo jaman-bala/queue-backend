@@ -1,5 +1,6 @@
 const Session = require('../models/session-model.js');
-const Queue = require('../models/queue-model..js');
+const Queue = require('../models/queue-model.js');
+const User = require('../models/user-model.js');
 
 module.exports = (io, socket) => {
     socket.on('complete-ticket', async (data) => {
@@ -13,7 +14,6 @@ module.exports = (io, socket) => {
                     message: 'Сессия не найдена',
                 });
             }
-            console.log(session);
             const queue = await Queue.findById(session.currentQueue);
             if (!queue) {
                 return socket.emit('ticket-error', {
@@ -34,8 +34,6 @@ module.exports = (io, socket) => {
                 .sort({ createdAt: 1 })
                 .exec();
 
-            console.log(availableQueues);
-
             if (availableQueues.length > 0) {
                 const assignedQueue = availableQueues[0];
                 assignedQueue.status = 'in-progress';
@@ -45,7 +43,7 @@ module.exports = (io, socket) => {
                 session.currentQueue = assignedQueue._id;
                 session.availableSince = new Date();
                 await session.save();
-                socket.emit('ticket-in-progress', {
+                socket.emit('ticket-in-progress-spec', {
                     success: true,
                     ticket: assignedQueue,
                 });
@@ -63,7 +61,7 @@ module.exports = (io, socket) => {
                 session.currentQueue = null;
                 session.availableSince = new Date();
                 await session.save();
-                socket.emit('specialist-available', {
+                socket.emit('specialist-available-spec', {
                     success: true,
                     sessionId: session._id,
                 });
@@ -112,8 +110,44 @@ module.exports = (io, socket) => {
                 success: true,
                 availableStatus: false,
             });
+            io.to(departmentId).emit('take-pause-specialist', {
+                windowNumber: session.windowNumber,
+            });
         } catch (error) {
             console.error('Ошибка при взятии паузы:', error.message);
+            socket.emit('ticket-error', {
+                success: false,
+                message: error.message,
+            });
+        }
+    });
+
+    socket.on('logout-specialist-backend', async (data) => {
+        const { userId, sessionId, departmentId } = data;
+
+        try {
+            const foundUser = await User.findById(userId);
+            if (!foundUser) {
+                return socket.emit('ticket-error', {
+                    success: false,
+                    message: 'Пользователь не найден',
+                });
+            }
+            const foundSession = await Session.findById(sessionId);
+            if (!foundSession) {
+                return socket.emit('ticket-error', {
+                    success: false,
+                    message: 'Сессия не найдена',
+                });
+            }
+            if (foundUser.role === 'specialist') {
+                io.to(departmentId).emit('logout-specialist-frontend', {
+                    windowNumber: foundSession.windowNumber,
+                });
+            }
+            console.log(foundUser.role);
+        } catch (error) {
+            console.error('Ошибка при продолжении работы:', error.message);
             socket.emit('ticket-error', {
                 success: false,
                 message: error.message,
@@ -155,6 +189,7 @@ module.exports = (io, socket) => {
                 io.to(departmentId).emit('ticket-in-progress', {
                     success: true,
                     ticket: savedTicket,
+                    windowNumber: session.windowNumber,
                 });
             }
         } catch (error) {

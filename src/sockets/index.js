@@ -8,6 +8,10 @@ module.exports = (io) => {
             console.log('DepartmentId connected ' + departmentId);
             socket.join(departmentId);
         });
+        socket.on('join-session', (sessionId) => {
+            console.log('SessionId connected ' + sessionId);
+            socket.join(sessionId);
+        });
         ticketHandler(io, socket);
         sessionHandler(io, socket);
         socket.on('disconnect', () => {

@@ -1,5 +1,5 @@
 const Department = require('../models/department-model.js');
-const Queue = require('../models/queue-model..js');
+const Queue = require('../models/queue-model.js');
 const Session = require('../models/session-model.js');
 
 module.exports = (io, socket) => {
@@ -43,6 +43,8 @@ module.exports = (io, socket) => {
 
             const ticketNumber = `${ticketType}${String(department.ticketCounters[ticketType]).padStart(4, '0')}`;
 
+            console.log(ticketNumber);
+
             const newTicket = new Queue({
                 type: ticketType,
                 ticketNumber: ticketNumber,
@@ -50,6 +52,8 @@ module.exports = (io, socket) => {
                 department: department._id,
                 status: 'waiting',
             });
+
+            console.log(newTicket);
 
             const savedTicket = await newTicket.save();
 
@@ -83,12 +87,29 @@ module.exports = (io, socket) => {
 
                 const hasQueues = waitingQueues.length > 0 ? false : true;
 
+                socket.emit('ticket-in-progress', {
+                    success: true,
+                    ticket: savedTicket,
+                    windowNumber: assignedSession.windowNumber,
+                    hasQueues,
+                });
+
                 io.to(departmentId).emit('ticket-in-progress', {
                     success: true,
                     ticket: savedTicket,
                     windowNumber: assignedSession.windowNumber,
                     hasQueues,
                 });
+
+                io.to(assignedSession._id.toString()).emit(
+                    'ticket-in-progress-spec',
+                    {
+                        success: true,
+                        ticket: savedTicket,
+                        windowNumber: assignedSession.windowNumber,
+                        hasQueues,
+                    },
+                );
 
                 console.log(
                     `Тикет ${savedTicket.ticketNumber} назначен специалисту ${assignedSession.userInfo}`,
@@ -98,7 +119,7 @@ module.exports = (io, socket) => {
                     success: true,
                     ticket: savedTicket,
                 });
-                io.to(departmentId).emit('new-ticket', savedTicket);
+                io.to(departmentId).emit('new-ticket', { ticket: savedTicket });
 
                 console.log(
                     `Тикет ${savedTicket.ticketNumber} добавлен в филиал ${department.name}`,
