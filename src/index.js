@@ -17,7 +17,11 @@ dotenv.config();
 const app = express();
 const server = createServer(app);
 const io = new Server(server, {
-    cors: 'http://e-queue.tsvs.kg',
+    cors: {
+        origin: ['http://dev-queue.tsvs.kg', 'http://e-queue.tsvs.kg'], // Убедитесь, что все домены указаны
+        methods: ['GET', 'POST'],
+        credentials: true,
+    },
 });
 const port = process.env.PORT || 5000;
 
