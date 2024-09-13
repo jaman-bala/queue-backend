@@ -18,7 +18,7 @@ const app = express();
 const server = createServer(app);
 const io = new Server(server, {
     cors: {
-        origin: ['http://dev-queue.tsvs.kg', 'http://e-queue.tsvs.kg'], // Убедитесь, что все домены указаны
+        origin: ['https://dev-queue.tsvs.kg', 'https://e-queue.tsvs.kg'],
         methods: ['GET', 'POST'],
         credentials: true,
     },
@@ -35,7 +35,7 @@ app.use((req, res, next) => {
 
 app.use(
     cors({
-        origin: 'http://e-queue.tsvs.kg',
+        origin: 'https://e-queue.tsvs.kg',
         methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
         credentials: true,
     }),
