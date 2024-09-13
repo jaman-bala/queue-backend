@@ -1,6 +1,9 @@
 const Session = require('../models/session-model.js');
 const Queue = require('../models/queue-model.js');
 const User = require('../models/user-model.js');
+const {
+    getTicketTypeForSession,
+} = require('../utils/helpers/queue-helpers.js');
 
 module.exports = (io, socket) => {
     socket.on('complete-ticket', async (data) => {
@@ -14,6 +17,8 @@ module.exports = (io, socket) => {
                     message: 'Сессия не найдена',
                 });
             }
+            const formattedTicketType = getTicketTypeForSession(ticketsType);
+
             const queue = await Queue.findById(session.currentQueue);
             if (!queue) {
                 return socket.emit('ticket-error', {
@@ -27,7 +32,7 @@ module.exports = (io, socket) => {
             console.log(queue);
 
             const availableQueues = await Queue.find({
-                type: ticketsType,
+                type: { $in: formattedTicketType },
                 status: 'waiting',
                 department: departmentId,
             })
@@ -166,17 +171,21 @@ module.exports = (io, socket) => {
                     message: 'Сессия не найдена',
                 });
             }
+            const formattedTicketType = getTicketTypeForSession(
+                session.ticketsType,
+            );
             const ticket = await Queue.findOne({
                 status: 'waiting',
-                type: session.ticketsType,
+                type: { $in: formattedTicketType },
                 department: departmentId,
             })
                 .sort({ createdAt: 1 })
                 .exec();
+
             if (!ticket) {
                 session.isAvailable = true;
                 await session.save();
-                socket.emit('available-specialist', {
+                socket.emit('available-specialist-spec', {
                     success: true,
                     availableStatus: true,
                 });
@@ -186,7 +195,12 @@ module.exports = (io, socket) => {
                 await session.save();
                 ticket.status = 'in-progress';
                 const savedTicket = await ticket.save();
-                io.to(session._id.toString()).emit('ticket-in-progress-spec', {
+                socket.emit('ticket-in-progress-spec', {
+                    success: true,
+                    ticket: savedTicket,
+                    windowNumber: session.windowNumber,
+                });
+                io.to(departmentId).emit('ticket-in-progress', {
                     success: true,
                     ticket: savedTicket,
                     windowNumber: session.windowNumber,

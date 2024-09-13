@@ -9,7 +9,6 @@ const sessionSchema = new mongoose.Schema({
     department: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Department',
-        required: true,
     },
     ticketsType: { type: String, enum: ['TS', 'VS'] },
     tickets: [

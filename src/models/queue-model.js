@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 const queueSchema = new mongoose.Schema({
-    type: { type: String, enum: ['TS', 'VS'], required: true },
+    type: { type: String, enum: ['TSF', 'TSY', 'VS', 'GR'], required: true },
     ticketNumber: { type: String, required: true },
     status: {
         type: String,

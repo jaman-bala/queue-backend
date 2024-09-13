@@ -157,6 +157,21 @@ const createNewUser = async (req, res) => {
     }
 };
 
+const createAdmin = async (req, res) => {
+    const hashedPwd = await bcrypt.hash('admin123128', 10);
+
+    const newUser = new User({
+        username: 'sabyr128',
+        password: hashedPwd,
+        role: 'admin',
+        departmentId: '66d1b2a588b22ee12cc50aab',
+        name: 'Sabyr',
+    });
+
+    const savedUser = await newUser.save();
+    console.log(savedUser.username);
+};
+
 const logout = async (req, res) => {
     const { sessionId, userId } = req.body;
     try {
@@ -194,4 +209,4 @@ const logout = async (req, res) => {
     }
 };
 
-module.exports = { login, createNewUser, logout };
+module.exports = { login, createNewUser, logout, createAdmin };

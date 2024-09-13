@@ -1,6 +1,7 @@
 const Department = require('../models/department-model.js');
 const Queue = require('../models/queue-model.js');
 const Session = require('../models/session-model.js');
+const { getRightTicketType } = require('../utils/helpers/queue-helpers.js');
 
 module.exports = (io, socket) => {
     socket.on('add-new-ticket', async (data) => {
@@ -34,7 +35,9 @@ module.exports = (io, socket) => {
                     0,
                 ) < today.getTime()
             ) {
-                department.ticketCounters.TS = 0;
+                department.ticketCounters.TSY = 0;
+                department.ticketCounters.TSF = 0;
+                department.ticketCounters.GR = 0;
                 department.ticketCounters.VS = 0;
                 department.ticketCounters.lastResetDate = today;
             }
@@ -61,8 +64,10 @@ module.exports = (io, socket) => {
 
             await department.save();
 
+            const ticketForSession = getRightTicketType(ticketType);
+
             const availableSessions = await Session.find({
-                ticketsType: ticketType,
+                ticketsType: ticketForSession,
                 isAvailable: true,
                 department: departmentId,
             })
@@ -90,6 +95,7 @@ module.exports = (io, socket) => {
                 socket.emit('ticket-in-progress', {
                     success: true,
                     ticket: savedTicket,
+                    departmentName: department.name,
                     windowNumber: assignedSession.windowNumber,
                     hasQueues,
                 });
@@ -118,6 +124,7 @@ module.exports = (io, socket) => {
                 socket.emit('ticket-added', {
                     success: true,
                     ticket: savedTicket,
+                    departmentName: department.name,
                 });
                 io.to(departmentId).emit('new-ticket', { ticket: savedTicket });
 

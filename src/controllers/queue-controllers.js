@@ -44,8 +44,10 @@ const getAllWaitingDepartmentsQueue = async (req, res) => {
             return res.status(200).json({ message: 'Очереди нет' });
         }
 
-        const tsTickets = queues.filter((queue) => queue.type === 'TS');
+        const tsFTickets = queues.filter((queue) => queue.type === 'TSF');
+        const tsYTickets = queues.filter((queue) => queue.type === 'TSY');
         const vsTickets = queues.filter((queue) => queue.type === 'VS');
+        const grTickets = queues.filter((queue) => queue.type === 'GR');
 
         const inProgressTickets = sessions.map((session) => ({
             windowNumber: session.windowNumber,
@@ -54,8 +56,10 @@ const getAllWaitingDepartmentsQueue = async (req, res) => {
 
         res.status(200).json({
             success: true,
-            tsTickets,
+            tsFTickets,
+            tsYTickets,
             vsTickets,
+            grTickets,
             inProgressTickets,
             sessions,
         });
