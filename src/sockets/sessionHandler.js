@@ -325,4 +325,39 @@ module.exports = (io, socket) => {
             });
         }
     });
+
+    socket.on('call-again', async (data) => {
+        try {
+            const { ticket, sessionId, departmentId } = data;
+            const foundSession =
+                await Session.findById(sessionId).populate('currentQueue');
+
+            if (!foundSession) {
+                socket.emit('ticket-error', {
+                    success: false,
+                    message: 'Такой сессии нет',
+                });
+                return;
+            }
+
+            if (!foundSession.currentQueue) {
+                socket.emit('ticket-error', {
+                    success: false,
+                    message: 'У специалиста нет клиента',
+                });
+                return;
+            }
+
+            io.to(departmentId).emit('call-again-spect', {
+                windowNumber: foundSession.windowNumber,
+                ticket: foundSession.currentQueue,
+            });
+        } catch (error) {
+            console.error('Ошибка при зове клиента повторно:', error.message);
+            socket.emit('ticket-error', {
+                success: false,
+                message: error.message,
+            });
+        }
+    });
 };

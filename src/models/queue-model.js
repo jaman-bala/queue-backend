@@ -23,6 +23,10 @@ const queueSchema = new mongoose.Schema({
         ref: 'Department',
         required: true,
     },
+    servicedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Session',
+    },
 });
 
 module.exports = mongoose.model('Queue', queueSchema);

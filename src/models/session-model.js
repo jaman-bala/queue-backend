@@ -26,6 +26,8 @@ const sessionSchema = new mongoose.Schema({
         type: String,
         enum: ['available', 'calling', 'in-progress', 'serviced'],
     },
+    acceptedTickets: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Queue' }],
+    skippedTickets: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Queue' }],
     availableSince: { type: Date },
 });
 
