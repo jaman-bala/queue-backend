@@ -1,6 +1,7 @@
 const Session = require('../models/session-model.js');
 const Queue = require('../models/queue-model.js');
 const User = require('../models/user-model.js');
+const Department = require('../models/department-model.js');
 const {
     getTicketTypeForSession,
 } = require('../utils/helpers/queue-helpers.js');
@@ -60,6 +61,7 @@ module.exports = (io, socket) => {
                     message: 'Сессия не найдена',
                 });
             }
+
             const queue = await Queue.findById(session.currentQueue);
             if (!queue) {
                 return socket.emit('ticket-error', {
@@ -67,22 +69,36 @@ module.exports = (io, socket) => {
                     message: 'Тикет не найден',
                 });
             }
+
             queue.status = 'skipped';
             await queue.save();
 
             const formattedTicketType = getTicketTypeForSession(ticketsType);
 
-            const availableQueues = await Queue.find({
-                type: { $in: formattedTicketType },
-                status: 'waiting',
-                department: departmentId,
-            })
-                .sort({ createdAt: 1 })
-                .exec();
+            const department = await Department.findById(departmentId)
+                .select('waitingQueues activeQueues')
+                .populate({
+                    path: 'waitingQueues',
+                    match: { type: { $in: formattedTicketType } },
+                });
 
-            if (availableQueues.length > 0) {
-                const assignedQueue = availableQueues[0];
+            await Department.updateOne(
+                { _id: departmentId },
+                { $pull: { activeQueues: queue._id } },
+            );
+
+            if (department.waitingQueues.length > 0) {
+                const assignedQueue = department.waitingQueues[0];
+                await Department.updateOne(
+                    { _id: departmentId },
+                    {
+                        $pull: { waitingQueues: assignedQueue._id },
+                        $push: { activeQueues: assignedQueue._id },
+                    },
+                );
+
                 assignedQueue.status = 'calling';
+                assignedQueue.servicedBy = session._id;
                 const savedQueue = await assignedQueue.save();
 
                 session.currentQueue = savedQueue._id;
@@ -106,6 +122,7 @@ module.exports = (io, socket) => {
                 session.status = 'available';
                 session.availableSince = new Date();
                 const savedSession = await session.save();
+
                 socket.emit('specialist-available-spec', {
                     success: true,
                     session: savedSession,
@@ -116,7 +133,7 @@ module.exports = (io, socket) => {
                 });
             }
         } catch (error) {
-            console.log(error);
+            console.error(error);
             socket.emit('ticket-error', {
                 success: false,
                 message: 'Ошибка сервера при пропуске клиента',
@@ -124,6 +141,7 @@ module.exports = (io, socket) => {
             });
         }
     });
+
     socket.on('complete-ticket', async (data) => {
         const { sessionId, departmentId } = data;
 
@@ -146,6 +164,18 @@ module.exports = (io, socket) => {
             queue.status = 'completed';
             queue.endServiceTime = new Date();
             const savedQueue = await queue.save();
+
+            const department = await Department.findById(departmentId);
+            if (!department) {
+                return socket.emit('ticket-error', {
+                    success: false,
+                    message: 'Департамент не найден',
+                });
+            }
+
+            department.activeQueues.pull(queue._id);
+            department.completedQueues.push(queue._id);
+            await department.save();
 
             session.availableSince = new Date();
             session.currentQueue = null;
@@ -183,32 +213,45 @@ module.exports = (io, socket) => {
 
             const formattedTicketType = getTicketTypeForSession(ticketsType);
 
-            const availableQueues = await Queue.find({
-                type: { $in: formattedTicketType },
-                status: 'waiting',
-                department: departmentId,
-            })
-                .sort({ createdAt: 1 })
-                .exec();
+            const department = await Department.findById(departmentId)
+                .select('waitingQueues activeQueues')
+                .populate({
+                    path: 'waitingQueues',
+                    match: {
+                        type: { $in: formattedTicketType },
+                    },
+                });
 
-            if (availableQueues.length > 0) {
-                const assignedQueue = availableQueues[0];
-                assignedQueue.status = 'calling';
-                const savedQueue = await assignedQueue.save();
+            if (department.waitingQueues.length > 0) {
+                const assignedQueue = department.waitingQueues[0];
 
-                session.currentQueue = savedQueue._id;
+                const updatedAssignedQueue = await Queue.findOneAndUpdate(
+                    { _id: assignedQueue._id },
+                    { status: 'calling', servicedBy: session._id },
+                    { new: true },
+                );
+
+                await Department.updateOne(
+                    { _id: departmentId },
+                    {
+                        $pull: { waitingQueues: assignedQueue._id },
+                        $push: { activeQueues: assignedQueue._id },
+                    },
+                );
+
+                session.currentQueue = assignedQueue._id;
                 session.isAvailable = false;
                 session.status = 'calling';
                 const savedSession = await session.save();
 
                 socket.emit('ticket-calling-spec', {
                     success: true,
-                    ticket: savedQueue,
+                    ticket: updatedAssignedQueue,
                     session: savedSession,
                 });
                 io.to(departmentId).emit('ticket-calling-spectator', {
                     success: true,
-                    ticket: savedQueue,
+                    ticket: updatedAssignedQueue,
                     session: savedSession,
                 });
                 console.log('next client');
@@ -218,6 +261,7 @@ module.exports = (io, socket) => {
                 session.status = 'available';
                 session.availableSince = new Date();
                 const savedSession = await session.save();
+
                 socket.emit('specialist-available-spec', {
                     success: true,
                     session: savedSession,
@@ -255,7 +299,14 @@ module.exports = (io, socket) => {
                     message: 'Сессия не найдена',
                 });
             }
+
             if (foundUser.role === 'specialist') {
+                const department =
+                    await Department.findById(departmentId).select(
+                        'activeQueues',
+                    );
+                department.activeQueues.pull(foundSession.currentQueue);
+                await department.save();
                 io.to(departmentId).emit('logout-specialist-frontend', {
                     windowNumber: foundSession.windowNumber,
                 });

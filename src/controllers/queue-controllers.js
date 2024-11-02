@@ -61,44 +61,80 @@ const getCurrentQueue = async (req, res) => {
         }
 
         const queue = await Queue.findById(session.currentQueue);
-        console.log(queue);
 
         if (!queue) {
             const formattedTicketType = getTicketTypeForSession(
                 session.ticketsType,
             );
 
-            const availableQueues = await Queue.find({
-                type: { $in: formattedTicketType },
-                status: 'waiting',
-                department: departmentId,
-            })
-                .sort({ createdAt: 1 })
-                .exec();
+            const department = await Department.findById(departmentId)
+                .select('waitingQueues activeQueues')
+                .populate({
+                    path: 'waitingQueues',
+                    match: {
+                        type: { $in: formattedTicketType },
+                    },
+                });
 
-            if (availableQueues.length > 0) {
-                const assignedQueue = availableQueues[0];
-                assignedQueue.status = 'calling';
-                const savedQueue = await assignedQueue.save();
+            if (department.waitingQueues.length > 0) {
+                console.log('ssssssssssssss');
+                // Извлекаем и удаляем первый элемент из waitingQueues
+                const assignedQueue = department.waitingQueues[0];
 
-                session.currentQueue = savedQueue._id;
-                session.isAvailable = false;
-                session.status = 'calling';
-                const savedSession = await session.save();
+                // Обновляем статус и данные assignedQueue через `updateOne`
+                await Queue.updateOne(
+                    { _id: assignedQueue._id },
+                    { status: 'calling', servicedBy: session._id },
+                );
+
+                // Обновляем данные сессии
+                await Session.updateOne(
+                    { _id: session._id },
+                    {
+                        currentQueue: assignedQueue._id,
+                        isAvailable: false,
+                        status: 'calling',
+                    },
+                );
+
+                // Переносим очередь в activeQueues департамента
+                await Department.updateOne(
+                    { _id: departmentId },
+                    {
+                        $pull: { waitingQueues: { _id: assignedQueue._id } },
+                        $push: { activeQueues: assignedQueue._id },
+                    },
+                );
 
                 return res.status(200).json({
-                    ticket: savedQueue,
-                    session: savedSession,
+                    ticket: assignedQueue,
+                    session: {
+                        ...session.toObject(),
+                        currentQueue: assignedQueue._id,
+                        isAvailable: false,
+                        status: 'calling',
+                    },
                 });
             } else {
-                session.isAvailable = true;
-                session.currentQueue = null;
-                session.status = 'available';
-                session.availableSince = new Date();
-                const savedSession = await session.save();
+                // Обновляем статус сессии как `доступный`
+                await Session.updateOne(
+                    { _id: session._id },
+                    {
+                        isAvailable: true,
+                        currentQueue: null,
+                        status: 'available',
+                        availableSince: new Date(),
+                    },
+                );
 
                 return res.status(200).json({
-                    session: savedSession,
+                    session: {
+                        ...session.toObject(),
+                        isAvailable: true,
+                        currentQueue: null,
+                        status: 'available',
+                        availableSince: new Date(),
+                    },
                     ticket: false,
                 });
             }
@@ -118,35 +154,35 @@ const getCurrentQueue = async (req, res) => {
 const getInProgressQueues = async (req, res) => {
     try {
         const { departmentId } = req.params;
-        const foundDepartment = await Department.findById(departmentId);
+        const foundDepartment = await Department.findById(
+            departmentId,
+        ).populate({
+            path: 'activeQueues',
+            populate: { path: 'servicedBy', select: 'windowNumber' },
+        });
         if (!foundDepartment) {
             res.status(404).json({ message: 'Нет такого филиала' });
         }
-        const sessions = await Session.find({
-            department: foundDepartment._id,
-            currentQueue: { $ne: null },
-            endTime: null,
-        })
-            .populate({
-                path: 'userInfo',
-                match: { role: 'specialist' },
-            })
-            .populate('currentQueue')
-            .sort({ availableSince: -1 })
-            .lean();
-
-        if (sessions.length === 0) {
+        if (foundDepartment.length === 0) {
             return res.status(204).json({
                 message: 'Нет клиентов, которые сейчас обслуживаются',
             });
         }
+        const sortedActiveQueues = foundDepartment.activeQueues
+            .sort((a, b) => {
+                if (a.status === 'calling' && b.status !== 'calling') return -1;
+                if (a.status !== 'calling' && b.status === 'calling') return 1;
+                return 0;
+            })
+            .map((queue) => ({
+                ticketNumber: queue.ticketNumber,
+                status: queue.status,
+                windowNumber: queue.servicedBy
+                    ? queue.servicedBy.windowNumber
+                    : null,
+            }));
 
-        const inProgressTickets = sessions.map((session) => ({
-            ...session.currentQueue,
-            windowNumber: session.windowNumber,
-        }));
-
-        res.status(200).json(inProgressTickets);
+        res.json(sortedActiveQueues);
     } catch (error) {
         console.log(error);
         res.status(500).json({

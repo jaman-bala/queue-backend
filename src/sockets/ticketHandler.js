@@ -56,8 +56,6 @@ module.exports = (io, socket) => {
 
             const savedTicket = await newTicket.save();
 
-            department.queues.push(savedTicket._id);
-
             await department.save();
 
             const ticketForSession = getRightTicketType(ticketType);
@@ -78,7 +76,11 @@ module.exports = (io, socket) => {
                 await assignedSession.save();
 
                 savedTicket.status = 'calling';
+                savedTicket.servicedBy = assignedSession._id;
                 await savedTicket.save();
+
+                department.activeQueues.push(savedTicket._id);
+                await department.save();
 
                 const waitingQueues = await Queue.find({
                     department: departmentId,
@@ -117,6 +119,9 @@ module.exports = (io, socket) => {
                     `Тикет ${savedTicket.ticketNumber} назначен специалисту ${assignedSession.userInfo}`,
                 );
             } else {
+                department.waitingQueues.push(savedTicket._id);
+                await department.save();
+
                 socket.emit('ticket-added', {
                     success: true,
                     ticket: savedTicket,
