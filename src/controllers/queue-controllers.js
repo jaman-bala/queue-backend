@@ -1,4 +1,4 @@
-const Session = require('../models/session-model');
+const User = require('../models/user-model');
 const Department = require('../models/department-model');
 const Queue = require('../models/queue-model');
 const mongoose = require('mongoose');
@@ -51,138 +51,137 @@ const getAllWaitingDepartmentsQueue = async (req, res) => {
 };
 
 const getCurrentQueue = async (req, res) => {
-    const { sessionId } = req.params;
+    const { userId } = req.params;
     const { departmentId } = req.query;
-    try {
-        const session = await Session.findById(sessionId);
+    const session = await mongoose.startSession();
 
-        if (!session) {
-            return res.status(400).json({ message: 'Нет такой сессии' });
+    try {
+        session.startTransaction();
+
+        const user = await User.findById(userId).session(session);
+
+        if (!user) {
+            await session.abortTransaction();
+            return res.status(400).json({ message: 'Нет такого пользователя' });
         }
 
-        const queue = await Queue.findById(session.currentQueue);
+        let queue = await Queue.findById(user.currentQueue).session(session);
 
         if (!queue) {
             const formattedTicketType = getTicketTypeForSession(
-                session.ticketsType,
+                user.ticketsType,
             );
 
-            const department = await Department.findById(departmentId)
-                .select('waitingQueues activeQueues')
-                .populate({
-                    path: 'waitingQueues',
-                    match: {
-                        type: { $in: formattedTicketType },
-                    },
-                });
+            queue = await Queue.findOneAndUpdate(
+                {
+                    departmentId: new mongoose.Types.ObjectId(departmentId),
+                    status: 'waiting',
+                    type: { $in: formattedTicketType },
+                },
+                {
+                    $set: { status: 'calling', servicedBy: user._id },
+                },
+                {
+                    new: true,
+                    session,
+                    sort: { createdAt: 1 },
+                },
+            );
 
-            if (department.waitingQueues.length > 0) {
-                console.log('ssssssssssssss');
-                // Извлекаем и удаляем первый элемент из waitingQueues
-                const assignedQueue = department.waitingQueues[0];
-
-                // Обновляем статус и данные assignedQueue через `updateOne`
-                await Queue.updateOne(
-                    { _id: assignedQueue._id },
-                    { status: 'calling', servicedBy: session._id },
-                );
-
-                // Обновляем данные сессии
-                await Session.updateOne(
-                    { _id: session._id },
-                    {
-                        currentQueue: assignedQueue._id,
-                        isAvailable: false,
-                        status: 'calling',
-                    },
-                );
-
-                // Переносим очередь в activeQueues департамента
-                await Department.updateOne(
-                    { _id: departmentId },
-                    {
-                        $pull: { waitingQueues: { _id: assignedQueue._id } },
-                        $push: { activeQueues: assignedQueue._id },
-                    },
-                );
-
-                return res.status(200).json({
-                    ticket: assignedQueue,
-                    session: {
-                        ...session.toObject(),
-                        currentQueue: assignedQueue._id,
-                        isAvailable: false,
-                        status: 'calling',
-                    },
-                });
-            } else {
-                // Обновляем статус сессии как `доступный`
-                await Session.updateOne(
-                    { _id: session._id },
+            if (!queue) {
+                await User.findByIdAndUpdate(
+                    userId,
                     {
                         isAvailable: true,
                         currentQueue: null,
                         status: 'available',
-                        availableSince: new Date(),
                     },
+                    { session },
                 );
+
+                await session.commitTransaction();
 
                 return res.status(200).json({
                     session: {
-                        ...session.toObject(),
+                        ...user.toObject(),
                         isAvailable: true,
                         currentQueue: null,
                         status: 'available',
-                        availableSince: new Date(),
                     },
                     ticket: false,
                 });
             }
+
+            await User.findByIdAndUpdate(
+                userId,
+                {
+                    currentQueue: queue._id,
+                    isAvailable: false,
+                    status: 'calling',
+                },
+                { session },
+            );
+
+            user.currentQueue = queue._id;
+            user.isAvailable = false;
+            user.status = 'calling';
         }
+
+        await session.commitTransaction();
 
         res.status(200).json({
             success: true,
             ticket: queue,
-            session,
+            session: {
+                ...user.toObject(),
+                currentQueue: user.currentQueue,
+                isAvailable: user.isAvailable,
+                status: user.status,
+            },
         });
     } catch (error) {
+        await session.abortTransaction();
         console.error('Ошибка при получении тикета:', error.message);
         res.status(500).json({ message: 'Ошибка на сервере' });
+    } finally {
+        session.endSession();
     }
 };
 
 const getInProgressQueues = async (req, res) => {
     try {
         const { departmentId } = req.params;
-        const foundDepartment = await Department.findById(
-            departmentId,
-        ).populate({
-            path: 'activeQueues',
-            populate: { path: 'servicedBy', select: 'windowNumber' },
-        });
-        if (!foundDepartment) {
-            res.status(404).json({ message: 'Нет такого филиала' });
-        }
-        if (foundDepartment.length === 0) {
+
+        const currentQueues = await User.find({
+            currentQueue: { $ne: null },
+            departmentId: new mongoose.Types.ObjectId(departmentId),
+        })
+            .populate({
+                path: 'currentQueue',
+                select: 'ticketNumber status',
+            })
+            .select('_id windowNumber currentQueue');
+
+        if (currentQueues.length === 0) {
             return res.status(204).json({
                 message: 'Нет клиентов, которые сейчас обслуживаются',
             });
         }
-        const sortedActiveQueues = foundDepartment.activeQueues
+
+        const sortedCurrentQueues = currentQueues
             .sort((a, b) => {
                 if (a.status === 'calling' && b.status !== 'calling') return -1;
                 if (a.status !== 'calling' && b.status === 'calling') return 1;
                 return 0;
             })
-            .map((queue) => ({
-                ticketNumber: queue.ticketNumber,
-                status: queue.status,
-                windowNumber: queue.servicedBy
-                    ? queue.servicedBy.windowNumber
-                    : null,
+            .map((item) => ({
+                _id: item._id,
+                ticketNumber: item.currentQueue.ticketNumber,
+                status: item.currentQueue.status,
+                windowNumber: item.windowNumber,
             }));
 
-        res.json(sortedActiveQueues);
+        res.json(sortedCurrentQueues);
     } catch (error) {
         console.log(error);
         res.status(500).json({
@@ -191,6 +190,22 @@ const getInProgressQueues = async (req, res) => {
             errorMessage: error,
         });
     }
+};
+
+const completeSession = async (req, res) => {
+    const { sessionId } = req.body;
+
+    const foundSession = await Session.findById(sessionId);
+    foundSession.endTime = new Date();
+    foundSession.isAvailable = false;
+    foundSession.status = 'available';
+
+    const foundQueue = await Queue.findById(foundSession.currentQueue);
+    foundQueue.status = 'completed';
+    foundQueue.endServiceTime = new Date();
+    await foundQueue.save();
+    foundSession.currentQueue = null;
+    await foundSession.save();
 };
 
 module.exports = {

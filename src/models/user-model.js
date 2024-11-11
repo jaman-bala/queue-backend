@@ -14,7 +14,15 @@ const userSchema = new mongoose.Schema({
         ref: 'Department',
         required: true,
     },
-    active: { type: Boolean, default: true },
+    isAvailable: { type: Boolean, default: true },
+    ticketsType: { type: String, enum: ['TS', 'VS'] },
+    status: {
+        type: String,
+        enum: ['available', 'calling', 'in-progress', 'serviced'],
+    },
+    windowNumber: { type: Number },
+    currentQueue: { type: mongoose.Schema.Types.ObjectId, ref: 'Queue' },
+    availableSince: { type: Date },
 });
 
 module.exports = mongoose.model('User', userSchema);

@@ -1,5 +1,4 @@
 const User = require('../models/user-model.js');
-const Session = require('../models/session-model.js');
 const Department = require('../models/department-model.js');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
@@ -18,19 +17,12 @@ const login = async (req, res) => {
         if (!foundUser) {
             return res.status(401).json({ message: 'Пользователь не найден' });
         }
-        console.log('windowNumber : ' + (!ticketsType && !windowNumber));
 
         if (
             foundUser.role === 'specialist' &&
             (!ticketsType || !windowNumber)
         ) {
             return res.status(400).json({ message: 'Заполните все поля' });
-        }
-
-        if (!foundUser.active) {
-            return res
-                .status(401)
-                .json({ message: 'Пользователь заблокирован' });
         }
 
         const match = await bcrypt.compare(password, foundUser.password);
@@ -49,35 +41,20 @@ const login = async (req, res) => {
             });
         }
 
-        const sessionData = {
-            userInfo: foundUser._id,
-            department: foundUser.departmentId,
-        };
+        foundUser.isAvailable = true;
 
         if (foundUser.role === 'specialist') {
-            sessionData.windowNumber = windowNumber;
-            sessionData.ticketsType = ticketsType;
+            foundUser.windowNumber = windowNumber;
+            foundUser.ticketsType = ticketsType;
+            foundUser.status = 'available';
+            foundUser.availableSince = new Date();
         }
 
-        const newSession = new Session(sessionData);
-        const savedSession = await newSession.save();
-
-        if (!savedSession) {
-            return res
-                .status(500)
-                .json({ message: 'Ошибка при создании сессии' });
-        }
+        await foundUser.save();
 
         const department = await Department.findById(foundUser.departmentId);
 
-        if (!department) {
-            return res
-                .status(400)
-                .json({ message: 'Филиал пользователя не найден' });
-        }
-
-        department.sessions.push(savedSession._id);
-        const savedDepartment = await department.save();
+        console.log(foundUser.departmentId);
 
         const accessToken = jwt.sign(
             {
@@ -89,12 +66,12 @@ const login = async (req, res) => {
                     name: foundUser.name,
                 },
                 DepartmentInfo: {
-                    departmentId: savedDepartment._id,
-                    name: savedDepartment.name,
+                    departmentId: department._id,
+                    name: department.name,
                 },
                 SessionInfo: {
-                    sessionId: savedSession._id,
-                    windowNumber: savedSession.windowNumber,
+                    sessionId: foundUser._id,
+                    windowNumber: windowNumber,
                 },
             },
             process.env.ACCESS_TOKEN_SECRET,
@@ -174,33 +151,26 @@ const createAdmin = async (req, res) => {
 };
 
 const logout = async (req, res) => {
-    const { sessionId, userId } = req.body;
+    const { userId } = req.body;
     try {
-        const foundSession = await Session.findById(sessionId);
-        if (!foundSession) {
-            return res
-                .status(400)
-                .json({ message: 'Не получилось найти сессию' });
-        }
-        foundSession.endTime = new Date();
-        foundSession.isAvailable = false;
-
         const foundUser = await User.findById(userId);
 
         if (!foundUser) {
             res.status(400).json({ message: 'Нет такого пользователя' });
         }
 
+        foundUser.isAvailable = false;
+
         if (foundUser.role === 'specialist') {
-            const foundQueue = await Queue.findById(foundSession.currentQueue);
+            const foundQueue = await Queue.findById(foundUser.currentQueue);
             if (foundQueue) {
                 foundQueue.status = 'completed';
-                await foundQueue.save();
+                foundQueue.endServiceTime = new Date();
             }
-            foundSession.currentQueue = null;
-            foundSession.status = 'available';
+            foundUser.currentQueue = null;
+            foundUser.status = 'available';
         }
-        await foundSession.save();
+        await foundUser.save();
 
         res.status(200).json({
             message: 'Пользователь успешно окончил сессию',

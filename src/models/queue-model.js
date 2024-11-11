@@ -18,14 +18,14 @@ const queueSchema = new mongoose.Schema({
     endServiceTime: {
         type: Date,
     },
-    department: {
+    departmentId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Department',
         required: true,
     },
     servicedBy: {
         type: mongoose.Schema.Types.ObjectId,
-        ref: 'Session',
+        ref: 'User',
     },
 });
 

@@ -8,7 +8,7 @@ const { Router } = require('express');
 const router = Router();
 
 router.get('/:departmentId', getAllWaitingDepartmentsQueue);
-router.get('/specialist/:sessionId', getCurrentQueue);
+router.get('/specialist/:userId', getCurrentQueue);
 router.get('/:departmentId/inprogress', getInProgressQueues);
 
 module.exports = router;

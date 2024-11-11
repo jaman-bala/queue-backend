@@ -1,324 +1,376 @@
-const Session = require('../models/session-model.js');
 const Queue = require('../models/queue-model.js');
 const User = require('../models/user-model.js');
 const Department = require('../models/department-model.js');
+const mongoose = require('mongoose');
 const {
     getTicketTypeForSession,
 } = require('../utils/helpers/queue-helpers.js');
 
 module.exports = (io, socket) => {
     socket.on('start-service', async (data) => {
-        const { sessionId, departmentId } = data;
+        const { userId, departmentId } = data;
+        const session = await mongoose.startSession();
 
         try {
-            const session = await Session.findById(sessionId).exec();
-            if (!session) {
+            session.startTransaction();
+
+            const user = await User.findById(userId).session(session);
+            if (!user) {
+                await session.abortTransaction();
                 return socket.emit('ticket-error', {
                     success: false,
-                    message: 'Сессия не найдена',
+                    message: 'Пользователь не найден',
                 });
             }
 
-            const queue = await Queue.findById(session.currentQueue);
-            if (!queue) {
+            if (!user.currentQueue) {
+                await session.abortTransaction();
                 return socket.emit('ticket-error', {
                     success: false,
-                    message: 'Тикет не найден',
+                    message: 'Талон не найден у специалиста',
                 });
             }
+
+            const queue = await Queue.findById(user.currentQueue).session(
+                session,
+            );
+            if (!queue) {
+                await session.abortTransaction();
+                return socket.emit('ticket-error', {
+                    success: false,
+                    message: 'Талон не найден',
+                });
+            }
+
             queue.status = 'in-progress';
-            session.status = 'in-progress';
             queue.startServiceTime = new Date();
-            const savedQueue = await queue.save();
-            await session.save();
+            const savedQueue = await queue.save({ session });
+
+            user.status = 'in-progress';
+            await user.save({ session });
+
+            await session.commitTransaction();
 
             socket.emit('ticket-in-progress-spec', {
                 success: true,
                 ticket: savedQueue,
-                sessionStatus: session.status,
+                userStatus: user.status,
             });
+
             io.to(departmentId).emit('ticket-in-progress-spectator', {
                 success: true,
                 ticket: savedQueue,
-                windowNumber: session.windowNumber,
+                windowNumber: user.windowNumber,
             });
         } catch (error) {
-            console.log(error);
+            await session.abortTransaction();
+            console.error(
+                'Ошибка при старте обслуживания клиента:',
+                error.message,
+            );
             socket.emit('ticket-error', {
                 success: false,
                 message: 'Ошибка сервера при старте обслуживания клиента',
                 errorMessage: error.message,
             });
+        } finally {
+            session.endSession();
         }
     });
+
     socket.on('ticket-skip', async (data) => {
-        const { sessionId, departmentId, ticketsType } = data;
+        const { userId, departmentId, ticketsType } = data;
+        const session = await mongoose.startSession();
+
         try {
-            const session = await Session.findById(sessionId).exec();
-            if (!session) {
+            session.startTransaction();
+
+            const user = await User.findById(userId).session(session);
+            if (!user) {
+                await session.abortTransaction();
                 return socket.emit('ticket-error', {
                     success: false,
-                    message: 'Сессия не найдена',
+                    message: 'Пользователь не найден',
                 });
             }
 
-            const queue = await Queue.findById(session.currentQueue);
-            if (!queue) {
+            if (!user.currentQueue) {
+                await session.abortTransaction();
                 return socket.emit('ticket-error', {
                     success: false,
-                    message: 'Тикет не найден',
+                    message: 'Нет текущего талона у специалиста',
+                });
+            }
+
+            const queue = await Queue.findById(user.currentQueue).session(
+                session,
+            );
+            if (!queue) {
+                await session.abortTransaction();
+                return socket.emit('ticket-error', {
+                    success: false,
+                    message: 'Талон не найден',
                 });
             }
 
             queue.status = 'skipped';
-            await queue.save();
+            await queue.save({ session });
+
+            user.currentQueue = null;
 
             const formattedTicketType = getTicketTypeForSession(ticketsType);
-
-            const department = await Department.findById(departmentId)
-                .select('waitingQueues activeQueues')
-                .populate({
-                    path: 'waitingQueues',
-                    match: { type: { $in: formattedTicketType } },
-                });
-
-            await Department.updateOne(
-                { _id: departmentId },
-                { $pull: { activeQueues: queue._id } },
+            const nextQueue = await Queue.findOneAndUpdate(
+                {
+                    departmentId: new mongoose.Types.ObjectId(departmentId),
+                    type: { $in: formattedTicketType },
+                    status: 'waiting',
+                },
+                {
+                    $set: {
+                        status: 'calling',
+                        servicedBy: user._id,
+                    },
+                },
+                {
+                    new: true,
+                    session,
+                    sort: { createdAt: 1 },
+                },
             );
 
-            if (department.waitingQueues.length > 0) {
-                const assignedQueue = department.waitingQueues[0];
-                await Department.updateOne(
-                    { _id: departmentId },
-                    {
-                        $pull: { waitingQueues: assignedQueue._id },
-                        $push: { activeQueues: assignedQueue._id },
-                    },
-                );
+            if (nextQueue) {
+                user.currentQueue = nextQueue._id;
+                user.status = 'calling';
+                user.isAvailable = false;
 
-                assignedQueue.status = 'calling';
-                assignedQueue.servicedBy = session._id;
-                const savedQueue = await assignedQueue.save();
+                await user.save({ session });
 
-                session.currentQueue = savedQueue._id;
-                session.isAvailable = false;
-                session.status = 'calling';
-                const savedSession = await session.save();
+                await session.commitTransaction();
 
                 socket.emit('ticket-calling-spec', {
                     success: true,
-                    ticket: savedQueue,
-                    session: savedSession,
+                    ticket: nextQueue,
+                    specialist: user,
                 });
+
                 io.to(departmentId).emit('ticket-calling-spectator', {
                     success: true,
-                    ticket: savedQueue,
-                    session: savedSession,
+                    ticket: nextQueue,
+                    windowNumber: user.windowNumber,
                 });
             } else {
-                session.isAvailable = true;
-                session.currentQueue = null;
-                session.status = 'available';
-                session.availableSince = new Date();
-                const savedSession = await session.save();
+                user.status = 'available';
+                user.isAvailable = true;
+                user.availableSince = new Date();
+
+                await user.save({ session });
+
+                await session.commitTransaction();
 
                 socket.emit('specialist-available-spec', {
                     success: true,
-                    session: savedSession,
+                    specialist: user,
                 });
+
                 io.to(departmentId).emit('specialist-available-spectator', {
                     success: true,
-                    session: savedSession,
+                    specialist: user,
                 });
             }
         } catch (error) {
-            console.error(error);
+            await session.abortTransaction();
+            console.error('Ошибка при пропуске клиента:', error.message);
             socket.emit('ticket-error', {
                 success: false,
                 message: 'Ошибка сервера при пропуске клиента',
                 errorMessage: error.message,
             });
+        } finally {
+            session.endSession();
         }
     });
 
     socket.on('complete-ticket', async (data) => {
-        const { sessionId, departmentId } = data;
+        const { userId, departmentId } = data;
+        const session = await mongoose.startSession();
 
         try {
-            const session = await Session.findById(sessionId).exec();
-            if (!session) {
+            session.startTransaction();
+
+            const user = await User.findById(userId).session(session);
+            if (!user) {
+                await session.abortTransaction();
                 return socket.emit('ticket-error', {
                     success: false,
-                    message: 'Сессия не найдена',
+                    message: 'Пользователь не найден',
                 });
             }
 
-            const queue = await Queue.findById(session.currentQueue);
-            if (!queue) {
+            if (!user.currentQueue) {
+                await session.abortTransaction();
                 return socket.emit('ticket-error', {
                     success: false,
-                    message: 'Тикет не найден',
+                    message: 'Текущий талон не найден у специалиста',
                 });
             }
+
+            const queue = await Queue.findById(user.currentQueue).session(
+                session,
+            );
+
+            if (!queue) {
+                await session.abortTransaction();
+                return socket.emit('ticket-error', {
+                    success: false,
+                    message: 'Талон не найден',
+                });
+            }
+
             queue.status = 'completed';
             queue.endServiceTime = new Date();
-            const savedQueue = await queue.save();
+            const savedQueue = await queue.save({ session });
 
-            const department = await Department.findById(departmentId);
+            const department =
+                await Department.findById(departmentId).session(session);
             if (!department) {
+                await session.abortTransaction();
                 return socket.emit('ticket-error', {
                     success: false,
                     message: 'Департамент не найден',
                 });
             }
 
-            department.activeQueues.pull(queue._id);
-            department.completedQueues.push(queue._id);
-            await department.save();
+            user.availableSince = new Date();
+            user.currentQueue = null;
+            user.status = 'serviced';
+            await user.save({ session });
 
-            session.availableSince = new Date();
-            session.currentQueue = null;
-            session.status = 'serviced';
-            const savedSession = await session.save();
+            await session.commitTransaction();
 
             socket.emit('complete-ticket-spec', {
                 success: true,
                 ticket: savedQueue,
-                session: savedSession,
+                specialist: user,
             });
+
             io.to(departmentId).emit('complete-ticket-spectator', {
                 success: true,
                 ticket: savedQueue,
-                session: savedSession,
+                specialist: user,
             });
         } catch (error) {
-            console.error(error);
+            await session.abortTransaction();
+            console.error('Ошибка при завершении талона:', error.message);
             socket.emit('ticket-error', {
                 success: false,
-                message: error.message,
-            });
-        }
-    });
-    socket.on('ticket-next', async (data) => {
-        const { sessionId, departmentId, ticketsType } = data;
-        try {
-            const session = await Session.findById(sessionId).exec();
-            if (!session) {
-                return socket.emit('ticket-error', {
-                    success: false,
-                    message: 'Сессия не найдена',
-                });
-            }
-
-            const formattedTicketType = getTicketTypeForSession(ticketsType);
-
-            const department = await Department.findById(departmentId)
-                .select('waitingQueues activeQueues')
-                .populate({
-                    path: 'waitingQueues',
-                    match: {
-                        type: { $in: formattedTicketType },
-                    },
-                });
-
-            if (department.waitingQueues.length > 0) {
-                const assignedQueue = department.waitingQueues[0];
-
-                const updatedAssignedQueue = await Queue.findOneAndUpdate(
-                    { _id: assignedQueue._id },
-                    { status: 'calling', servicedBy: session._id },
-                    { new: true },
-                );
-
-                await Department.updateOne(
-                    { _id: departmentId },
-                    {
-                        $pull: { waitingQueues: assignedQueue._id },
-                        $push: { activeQueues: assignedQueue._id },
-                    },
-                );
-
-                session.currentQueue = assignedQueue._id;
-                session.isAvailable = false;
-                session.status = 'calling';
-                const savedSession = await session.save();
-
-                socket.emit('ticket-calling-spec', {
-                    success: true,
-                    ticket: updatedAssignedQueue,
-                    session: savedSession,
-                });
-                io.to(departmentId).emit('ticket-calling-spectator', {
-                    success: true,
-                    ticket: updatedAssignedQueue,
-                    session: savedSession,
-                });
-                console.log('next client');
-            } else {
-                session.isAvailable = true;
-                session.currentQueue = null;
-                session.status = 'available';
-                session.availableSince = new Date();
-                const savedSession = await session.save();
-
-                socket.emit('specialist-available-spec', {
-                    success: true,
-                    session: savedSession,
-                });
-                io.to(departmentId).emit('specialist-available-spectator', {
-                    success: true,
-                    session: savedSession,
-                });
-            }
-        } catch (error) {
-            console.error(error);
-            socket.emit('ticket-error', {
-                success: false,
-                message: 'Ошибка при приёме следующего клиента',
+                message: 'Ошибка сервера при завершении талона',
                 errorMessage: error.message,
             });
+        } finally {
+            session.endSession();
         }
     });
 
-    socket.on('logout-specialist-backend', async (data) => {
-        const { userId, sessionId, departmentId } = data;
+    socket.on('ticket-next', async (data) => {
+        const { userId, departmentId, ticketsType } = data;
+        const session = await mongoose.startSession();
 
         try {
-            const foundUser = await User.findById(userId);
-            if (!foundUser) {
+            session.startTransaction();
+
+            const user = await User.findById(userId).session(session);
+            if (!user) {
+                await session.abortTransaction();
                 return socket.emit('ticket-error', {
                     success: false,
                     message: 'Пользователь не найден',
                 });
             }
-            const foundSession = await Session.findById(sessionId);
-            if (!foundSession) {
+
+            const formattedTicketType = getTicketTypeForSession(ticketsType);
+
+            const department =
+                await Department.findById(departmentId).session(session);
+            if (!department) {
+                await session.abortTransaction();
                 return socket.emit('ticket-error', {
                     success: false,
-                    message: 'Сессия не найдена',
+                    message: 'Департамент не найден',
                 });
             }
 
-            if (foundUser.role === 'specialist') {
-                const department =
-                    await Department.findById(departmentId).select(
-                        'activeQueues',
-                    );
-                department.activeQueues.pull(foundSession.currentQueue);
-                await department.save();
-                io.to(departmentId).emit('logout-specialist-frontend', {
-                    windowNumber: foundSession.windowNumber,
+            const nextQueue = await Queue.findOneAndUpdate(
+                {
+                    departmentId: new mongoose.Types.ObjectId(departmentId),
+                    type: { $in: formattedTicketType },
+                    status: 'waiting',
+                },
+                {
+                    $set: {
+                        status: 'calling',
+                        servicedBy: user._id,
+                    },
+                },
+                {
+                    new: true,
+                    session,
+                    sort: { createdAt: 1 },
+                },
+            );
+
+            if (nextQueue) {
+                user.currentQueue = nextQueue._id;
+                user.status = 'calling';
+                user.isAvailable = false;
+
+                await user.save({ session });
+
+                await session.commitTransaction();
+
+                socket.emit('ticket-calling-spec', {
+                    success: true,
+                    ticket: nextQueue,
+                    specialist: user,
+                });
+
+                io.to(departmentId).emit('ticket-calling-spectator', {
+                    success: true,
+                    ticket: nextQueue,
+                    windowNumber: user.windowNumber,
+                });
+            } else {
+                user.status = 'available';
+                user.isAvailable = true;
+                user.currentQueue = null;
+                user.availableSince = new Date();
+
+                await user.save({ session });
+
+                await session.commitTransaction();
+
+                socket.emit('specialist-available-spec', {
+                    success: true,
+                    specialist: user,
+                });
+
+                io.to(departmentId).emit('specialist-available-spectator', {
+                    success: true,
+                    specialist: user,
                 });
             }
-            console.log(foundUser.role);
         } catch (error) {
-            console.error(error.message);
+            await session.abortTransaction();
+            console.error(
+                'Ошибка при приёме следующего клиента:',
+                error.message,
+            );
             socket.emit('ticket-error', {
                 success: false,
-                message: 'Ошибка при выходе из системы',
+                message: 'Ошибка сервера при приёме следующего клиента',
                 errorMessage: error.message,
             });
+        } finally {
+            session.endSession();
         }
     });
 
@@ -378,37 +430,49 @@ module.exports = (io, socket) => {
     });
 
     socket.on('call-again', async (data) => {
+        const session = await mongoose.startSession();
         try {
-            const { ticket, sessionId, departmentId } = data;
-            const foundSession =
-                await Session.findById(sessionId).populate('currentQueue');
+            const { userId, departmentId } = data;
+            session.startTransaction();
 
-            if (!foundSession) {
-                socket.emit('ticket-error', {
+            const user = await User.findById(userId)
+                .populate('currentQueue')
+                .session(session);
+
+            if (!user) {
+                await session.abortTransaction();
+                return socket.emit('ticket-error', {
                     success: false,
-                    message: 'Такой сессии нет',
+                    message: 'Такого специалиста нет',
                 });
-                return;
             }
 
-            if (!foundSession.currentQueue) {
-                socket.emit('ticket-error', {
+            if (!user.currentQueue) {
+                await session.abortTransaction();
+                return socket.emit('ticket-error', {
                     success: false,
                     message: 'У специалиста нет клиента',
                 });
-                return;
             }
 
+            await session.commitTransaction();
+
+            console.log(departmentId);
+
             io.to(departmentId).emit('call-again-spect', {
-                windowNumber: foundSession.windowNumber,
-                ticket: foundSession.currentQueue,
+                windowNumber: user.windowNumber,
+                ticket: user.currentQueue,
             });
         } catch (error) {
+            await session.abortTransaction();
             console.error('Ошибка при зове клиента повторно:', error.message);
             socket.emit('ticket-error', {
                 success: false,
-                message: error.message,
+                message: 'Ошибка при зове клиента повторно',
+                errorMessage: error.message,
             });
+        } finally {
+            session.endSession();
         }
     });
 };
